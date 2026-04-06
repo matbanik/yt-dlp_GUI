@@ -5,12 +5,70 @@ echo     YouTube Downloader Minimal Build Script
 echo =======================================================
 echo.
 
+REM Set virtual environment directory
+set VENV_DIR=venv_build
+
 REM Clean everything
 if exist "dist" rmdir /s /q "dist"
 if exist "build" rmdir /s /q "build"
 if exist "__pycache__" rmdir /s /q "__pycache__"
 del *.spec 2>nul
 
+echo Setting up virtual environment...
+echo.
+
+REM Create virtual environment if it doesn't exist
+if not exist "%VENV_DIR%" (
+    echo Creating virtual environment...
+    python -m venv %VENV_DIR%
+    if errorlevel 1 (
+        echo ERROR: Failed to create virtual environment
+        pause
+        exit /b 1
+    )
+)
+
+REM Activate virtual environment
+echo Activating virtual environment...
+call %VENV_DIR%\Scripts\activate.bat
+if errorlevel 1 (
+    echo ERROR: Failed to activate virtual environment
+    pause
+    exit /b 1
+)
+
+echo.
+echo Upgrading pip...
+python -m pip install --upgrade pip
+
+echo.
+echo Installing nightly yt-dlp with default dependencies...
+pip install -U --pre "yt-dlp[default]"
+if errorlevel 1 (
+    echo ERROR: Failed to install yt-dlp
+    pause
+    exit /b 1
+)
+
+echo.
+echo Installing PyInstaller...
+pip install pyinstaller
+if errorlevel 1 (
+    echo ERROR: Failed to install PyInstaller
+    pause
+    exit /b 1
+)
+
+echo.
+echo Verifying yt-dlp installation...
+python -c "import yt_dlp; print(f'yt-dlp version: {yt_dlp.version.__version__}')"
+if errorlevel 1 (
+    echo ERROR: Failed to verify yt-dlp installation
+    pause
+    exit /b 1
+)
+
+echo.
 echo Building minimal single-file version...
 echo.
 
@@ -24,11 +82,11 @@ pyinstaller ^
     --noconfirm ^
     youtube_downloader.py
 
-if exist "dist\yd.exe" (
+if exist "dist\youtube_downloader.exe" (
     echo.
     echo SUCCESS: Minimal build completed!
     echo Executable: dist\youtube_downloader.exe
-    for %%A in ("dist\yd.exe") do echo Size: %%~zA bytes
+    for %%A in ("dist\youtube_downloader.exe") do echo Size: %%~zA bytes
     echo.
     echo =======================================================
     echo                 IMPORTANT NOTICE
@@ -48,7 +106,7 @@ if exist "dist\yd.exe" (
     echo    - Add that folder to your Windows PATH
     echo.
     echo 3. PORTABLE ^(Advanced^):
-    echo    - Place ffmpeg.exe in the same folder as yd.exe
+    echo    - Place ffmpeg.exe in the same folder as youtube_downloader.exe
     echo.
     echo VERIFY INSTALLATION:
     echo    Open Command Prompt and run: ffmpeg -version
@@ -60,6 +118,10 @@ if exist "dist\yd.exe" (
     pause
     exit /b 1
 )
+
+echo.
+echo Deactivating virtual environment...
+deactivate
 
 echo.
 pause

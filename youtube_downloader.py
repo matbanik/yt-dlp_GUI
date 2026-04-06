@@ -154,11 +154,20 @@ class YouTubeDownloaderApp:
         self.sabr_quality_options = ['360p']  # Only 360p works under SABR restrictions
         self.sabr_audio_options = ['standard_mp3 (~192kbps MP3)', 'high_m4a (~160kbps AAC)']
 
+        # --- Cookie Authentication State ---
+        self.cookie_browsers = ['chrome', 'firefox', 'edge', 'brave', 'opera', 'vivaldi', 'chromium', 'whale', 'safari']
+
         # --- GUI Variables ---
         self.download_path = tk.StringVar(value=DEFAULT_DOWNLOAD_PATH)
         self.log_level_var = tk.StringVar(value='INFO')
         self.yt_dlp_debug_var = tk.BooleanVar(value=False)
         self.console_visible_var = tk.BooleanVar(value=True)
+        
+        # Cookie GUI variables
+        self.cookie_mode = tk.StringVar(value='none')
+        self.cookie_browser = tk.StringVar(value='chrome')
+        self.cookie_browser_profile = tk.StringVar(value='')
+        self.cookie_file_path = tk.StringVar(value='')
         
         # --- yt-dlp Logger ---
         self.yt_dlp_logger = YtDlpLogger(self)
@@ -307,6 +316,68 @@ class YouTubeDownloaderApp:
         # SABR indicator will be added here dynamically when active
         self.sabr_control_frame = sabr_control_frame
 
+        # --- Cookie Authentication Frame (row 5 under SABR controls) ---
+        cookie_frame = ttk.Frame(top_frame)
+        cookie_frame.grid(row=5, column=0, columnspan=3, sticky='ew', pady=5)
+        
+        ttk.Label(cookie_frame, text="🍪 Cookies:").pack(side=tk.LEFT, padx=(0, 2))
+        
+        # Help button for cookie setup guidance
+        cookie_help_btn = tk.Button(cookie_frame, text="?", font=("Arial", 7, "bold"),
+                                     width=2, height=1, relief='groove', cursor='hand2',
+                                     command=self.show_cookie_help)
+        cookie_help_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Mode dropdown: None / From Browser / From File
+        cookie_modes = ['None', 'From Browser', 'From File']
+        self.cookie_mode_menu = ttk.OptionMenu(cookie_frame, self.cookie_mode, 'none',
+                                               *[m.lower().replace(' ', '_') for m in cookie_modes])
+        # Override with user-friendly labels
+        menu = self.cookie_mode_menu['menu']
+        menu.delete(0, 'end')
+        mode_map = [('none', 'None'), ('from_browser', 'From Browser'), ('from_file', 'From File')]
+        for val, label in mode_map:
+            menu.add_command(label=label, command=lambda v=val: self._set_cookie_mode(v))
+        self.cookie_mode_menu.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # --- Browser sub-widgets (shown when mode = from_browser) ---
+        self.cookie_browser_frame = ttk.Frame(cookie_frame)
+        
+        ttk.Label(self.cookie_browser_frame, text="Browser:").pack(side=tk.LEFT, padx=(0, 3))
+        self.cookie_browser_menu = ttk.OptionMenu(self.cookie_browser_frame, self.cookie_browser,
+                                                   'chrome', *self.cookie_browsers)
+        self.cookie_browser_menu.pack(side=tk.LEFT, padx=(0, 8))
+        
+        ttk.Label(self.cookie_browser_frame, text="Profile:").pack(side=tk.LEFT, padx=(0, 3))
+        self.cookie_profile_entry = ttk.Entry(self.cookie_browser_frame, textvariable=self.cookie_browser_profile, width=14)
+        self.cookie_profile_entry.pack(side=tk.LEFT, padx=(0, 8))
+        
+        self.cookie_browser_warning = tk.Label(self.cookie_browser_frame, text="⚠ Close browser first!",
+                                               font=("Arial", 8, "bold"), fg="orange")
+        self.cookie_browser_warning.pack(side=tk.LEFT, padx=(5, 0))
+        
+        # Test Cookies button
+        self.cookie_test_button = ttk.Button(self.cookie_browser_frame, text="Test", 
+                                             command=self.test_browser_cookies, width=5)
+        self.cookie_test_button.pack(side=tk.LEFT, padx=(8, 0))
+        # Hidden initially
+        
+        # --- File sub-widgets (shown when mode = from_file) ---
+        self.cookie_file_frame = ttk.Frame(cookie_frame)
+        
+        self.cookie_file_entry = ttk.Entry(self.cookie_file_frame, textvariable=self.cookie_file_path, width=40, state='readonly')
+        self.cookie_file_entry.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.cookie_browse_button = ttk.Button(self.cookie_file_frame, text="Browse...", command=self.browse_cookie_file)
+        self.cookie_browse_button.pack(side=tk.LEFT, padx=(0, 8))
+        
+        tk.Label(self.cookie_file_frame, text="Netscape cookies.txt", font=("Arial", 8), fg="gray").pack(side=tk.LEFT)
+        # Hidden initially
+        
+        # Status label for cookie authentication
+        self.cookie_status_label = tk.Label(cookie_frame, text="", font=("Arial", 8), fg="green")
+        self.cookie_status_label.pack(side=tk.LEFT, padx=(10, 0))
+
         # --- List Frame: Download Queue ---
         # Status summary frame with colored labels (above the table)
         status_summary_frame = ttk.Frame(list_frame)
@@ -378,6 +449,7 @@ class YouTubeDownloaderApp:
         self.tree.column('Status', width=100, anchor='center')
         self.tree.bind('<<TreeviewSelect>>', self.on_video_select)
         self.tree.bind('<Button-1>', self.on_tree_click)  # Handle mouse clicks
+        self.tree.bind('<Button-3>', self.on_right_click)  # Handle right-click for context menu
         self.tree.bind('<Motion>', self.on_tree_motion)  # Handle mouse motion for cursor changes
         self.tree.bind('<Enter>', self.on_tree_enter)  # Handle mouse enter
         self.tree.bind('<Leave>', self.on_tree_leave)  # Handle mouse leave
@@ -716,6 +788,59 @@ class YouTubeDownloaderApp:
         """Handle mouse entering the treeview."""
         pass  # Motion handler will take care of hover highlighting
 
+    def on_right_click(self, event):
+        """Handle right-click to show context menu for removing selected videos."""
+        # Select the item under the cursor if not already selected
+        item = self.tree.identify_row(event.y)
+        current_selection = self.tree.selection()
+        
+        if item:
+            # If the clicked item is not in the current selection, replace selection with just this item
+            # If it's already selected, keep the current selection (supports multi-select)
+            if item not in current_selection:
+                self.tree.selection_set(item)
+            
+            # Get updated selection (may include multiple items)
+            updated_selection = self.tree.selection()
+            num_selected = len(updated_selection)
+            
+            # Create context menu
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            # Show appropriate label based on selection count
+            if num_selected == 1:
+                context_menu.add_command(label="Remove", command=self.remove_selected)
+            else:
+                context_menu.add_command(label=f"Remove {num_selected} Selected", command=self.remove_selected)
+            
+            context_menu.add_separator()
+            context_menu.add_command(label="Remove All", command=self.clear_all)
+            
+            # Show the context menu at the cursor position
+            try:
+                context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                # Make sure to release the menu on release
+                context_menu.grab_release()
+        elif current_selection:
+            # Right-click on empty space but items are selected - show menu for selected items
+            num_selected = len(current_selection)
+            context_menu = tk.Menu(self.root, tearoff=0)
+            
+            if num_selected == 1:
+                context_menu.add_command(label="Remove", command=self.remove_selected)
+            else:
+                context_menu.add_command(label=f"Remove {num_selected} Selected", command=self.remove_selected)
+            
+            context_menu.add_separator()
+            context_menu.add_command(label="Remove All", command=self.clear_all)
+            
+            try:
+                context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                context_menu.grab_release()
+        # If no item and no selection, don't show menu (nothing to remove)
+
     def on_tree_leave(self, event):
         """Handle mouse leaving the treeview."""
         # Remove hover highlighting when mouse leaves
@@ -825,19 +950,46 @@ class YouTubeDownloaderApp:
         return ydl_opts
 
     def build_extractor_args(self):
-        """Build unified extractor arguments for consistent YouTube handling."""
-        return {
-            'youtube': {
-                'player_client': ['android', 'tv', 'ios'],  # Stable order; android first
-                'player_skip': ['webpage', 'configs'],
-                'skip': ['hls', 'dash'],
-                'include_hls_manifest': False,
-                'include_dash_manifest': False
+        """Build unified extractor arguments for consistent YouTube handling.
+        
+        When cookies are active, android/ios clients are skipped by yt-dlp
+        (they don't support cookies). Use cookie-compatible clients instead.
+        """
+        cookie_mode = getattr(self, 'cookie_mode', None)
+        cookies_active = cookie_mode and cookie_mode.get() not in ('', 'none', None)
+        
+        if cookies_active:
+            # Cookie-compatible clients only — android/ios don't support cookies
+            return {
+                'youtube': {
+                    'player_client': ['tv', 'web_safari', 'web'],
+                }
             }
-        }
+        else:
+            # Default SABR bypass configuration (no cookies)
+            return {
+                'youtube': {
+                    'player_client': ['android', 'tv', 'ios'],
+                    'player_skip': ['webpage', 'configs'],
+                    'skip': ['hls', 'dash'],
+                    'include_hls_manifest': False,
+                    'include_dash_manifest': False
+                }
+            }
 
     def get_audio_format_selector(self, quality_option, ffmpeg_available=True):
         """Generate yt-dlp format selector based on audio quality choice with SABR-compatible fallbacks."""
+        
+        # When cookies are active, HTTPS audio formats also return 403.
+        # Use HLS format with bestaudio fallback.
+        cookie_mode = getattr(self, 'cookie_mode', None)
+        cookies_active = cookie_mode and cookie_mode.get() not in ('', 'none', None)
+        
+        if cookies_active:
+            selected_format = 'bestaudio[protocol=m3u8_native]/bestaudio[protocol=m3u8]/bestaudio/worst'
+            self.log_message(f"Audio format selector for '{quality_option}' (HLS/cookie mode): {selected_format}", "DEBUG")
+            return selected_format
+        
         # Progressive fallback strategy for audio formats due to SABR/PO Token restrictions
         audio_format_map = {
             'default': 'bestaudio/best[height<=480]/best',  # Fallback to low-res video if needed
@@ -861,11 +1013,37 @@ class YouTubeDownloaderApp:
         return selected_format
 
     def get_video_format_selector(self, quality_option):
-        """Generate yt-dlp format selector based on video quality choice with SABR-compatible fallbacks."""
+        """Generate yt-dlp format selector based on video quality choice with SABR-compatible fallbacks.
+        
+        When cookies are active, HTTPS direct-download formats return 403 (they need
+        PO tokens for SABR). Only HLS formats work for cookie-authenticated content.
+        We detect this and prefer HLS protocol formats via the 'protocol=m3u8' filter.
+        """
         # Clean up quality option (remove extra info in parentheses)
         clean_quality = quality_option.split()[0].lower()
         
-        # SABR-compatible video format selectors with progressive fallbacks
+        # Check if cookies are active — if so, HTTPS formats will 403
+        cookie_mode = getattr(self, 'cookie_mode', None)
+        cookies_active = cookie_mode and cookie_mode.get() not in ('', 'none', None)
+        
+        if cookies_active:
+            # HLS-only format selectors for cookie-authenticated content.
+            # HTTPS direct formats return 403 without PO tokens; only HLS works.
+            height_map = {
+                'best': 1080, '1080p': 1080, '720p': 720, '480p': 480,
+                '360p': 360, '240p': 240, '144p': 144, 'default': 720,
+                '1440p': 1440, '2160p': 2160, '4320p': 4320, 'lowest': 144,
+            }
+            target = height_map.get(clean_quality, 720)
+            # Try: HLS at target quality → any HLS → absolute worst as last resort
+            selected_format = (
+                f'best[height<={target}][protocol=m3u8_native]/best[height<={target}][protocol=m3u8]/'
+                f'best[protocol=m3u8_native]/best[protocol=m3u8]/worst'
+            )
+            self.log_message(f"Video format selector for '{clean_quality}' (HLS/cookie mode): {selected_format}", "DEBUG")
+            return selected_format
+        
+        # Standard SABR-compatible video format selectors with progressive fallbacks
         video_format_map = {
             'default': 'best[height<=720]/best[height<=480]/best',
             'lowest': 'worst[height>=144]/worst[height>=240]/worst[height>=360]/worst',
@@ -1037,7 +1215,11 @@ class YouTubeDownloaderApp:
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             },
-            'extractor_args': self.build_extractor_args()
+            'extractor_args': self.build_extractor_args(),
+            # Enable Node.js runtime for YouTube nsig (n parameter) challenge solving.
+            # Without this, yt-dlp cannot decrypt stream URLs and all formats return 403.
+            # Requires: Node.js >= 20 installed + yt-dlp-ejs companion package.
+            'js_runtimes': {'node': {}},
         }
         
         if for_download and download_path:
@@ -1061,54 +1243,354 @@ class YouTubeDownloaderApp:
                 'windowsfilenames': True,   # Windows-safe filenames
             })
             
+            # When cookies are active, nsig challenge may fail on older yt-dlp,
+            # leaving only HLS formats. Allow download to proceed with those.
+            cookie_mode = getattr(self, 'cookie_mode', None)
+            if cookie_mode and cookie_mode.get() not in ('', 'none', None):
+                base_opts['ignore_no_formats_error'] = True
+            
             # Add format-specific options if video_info provided
             if video_info:
                 format_opts = self.build_download_format(video_info)
                 base_opts.update(format_opts)
         else:
-            # Extraction-only options
+            # Extraction-only options — we want metadata even if format selection
+            # fails (e.g. HLS-only streams from cookie-authenticated content).
+            # ignore_no_formats_error prevents ignoreerrors from returning None.
             base_opts.update({
                 'skip_download': True,
+                'ignore_no_formats_error': True,
             })
+        
+        # Apply cookie authentication if configured
+        cookie_opts = self.get_cookie_opts()
+        if cookie_opts:
+            base_opts.update(cookie_opts)
         
         # Apply logger configuration
         base_opts = self.configure_ydl_opts_with_logger(base_opts)
         
         return base_opts
 
+    # --- Cookie Authentication Methods ---
+
+    # Known DPAPI / App-Bound Encryption error signatures
+    _DPAPI_ERROR_PATTERNS = [
+        'failed to decrypt with dpapi',
+        'could not copy chrome cookie database',
+        'failed to load cookies',
+        'cookieloaderror',
+    ]
+
+    @staticmethod
+    def _is_dpapi_error(error_msg):
+        """Check if an error message indicates a Chrome DPAPI / App-Bound Encryption failure."""
+        msg_lower = str(error_msg).lower()
+        return any(pat in msg_lower for pat in YouTubeDownloaderApp._DPAPI_ERROR_PATTERNS)
+
+    def _set_cookie_mode(self, mode):
+        """Handle cookie mode changes and show/hide relevant widgets."""
+        self.cookie_mode.set(mode)
+        # Hide all sub-frames first
+        self.cookie_browser_frame.pack_forget()
+        self.cookie_file_frame.pack_forget()
+        
+        if mode == 'from_browser':
+            self.cookie_browser_frame.pack(side=tk.LEFT)
+            browser = self.cookie_browser.get()
+            self.cookie_status_label.config(text=f"Using {browser} cookies (click Test to verify)", fg="#666")
+            self.log_message(f"Cookie auth: browser mode ({browser})")
+        elif mode == 'from_file':
+            self.cookie_file_frame.pack(side=tk.LEFT)
+            path = self.cookie_file_path.get()
+            if path and os.path.isfile(path):
+                self.cookie_status_label.config(text="✓ Cookie file loaded", fg="green")
+            else:
+                self.cookie_status_label.config(text="Select a cookies.txt file", fg="gray")
+            self.log_message("Cookie auth: file mode")
+        else:
+            self.cookie_status_label.config(text="", fg="green")
+            self.log_message("Cookie auth: disabled")
+        
+        self.schedule_save_settings()
+
+    def test_browser_cookies(self):
+        """Test whether browser cookie extraction works (catches DPAPI errors early)."""
+        browser = self.cookie_browser.get()
+        profile = self.cookie_browser_profile.get().strip() or None
+        
+        self.cookie_status_label.config(text="Testing...", fg="#666")
+        self.cookie_test_button.config(state=tk.DISABLED)
+        self.log_message(f"Testing cookie extraction from {browser}...")
+        
+        def run_test():
+            try:
+                cookie_tuple = (browser, profile) if profile else (browser,)
+                test_opts = {
+                    'cookiesfrombrowser': cookie_tuple,
+                    'skip_download': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                }
+                # Just instantiating YoutubeDL with cookiesfrombrowser triggers cookie loading
+                with yt_dlp.YoutubeDL(test_opts) as ydl:
+                    pass  # If we get here, cookies loaded successfully
+                
+                self.root.after(0, lambda: self._on_cookie_test_result(True, browser))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_cookie_test_result(False, browser, str(e)))
+        
+        threading.Thread(target=run_test, daemon=True).start()
+
+    def _on_cookie_test_result(self, success, browser, error_msg=''):
+        """Handle the result of a cookie extraction test."""
+        self.cookie_test_button.config(state=tk.NORMAL)
+        
+        if success:
+            self.cookie_status_label.config(text=f"✓ {browser} cookies OK", fg="green")
+            self.log_message(f"Cookie test PASSED: {browser} cookies loaded successfully")
+        else:
+            if self._is_dpapi_error(error_msg):
+                self.cookie_status_label.config(
+                    text="✗ DPAPI blocked — use 'From File' instead", fg="red")
+                self.log_message(
+                    f"Cookie test FAILED: Chrome App-Bound Encryption prevents cookie extraction. "
+                    f"This is a known Chrome security change (see github.com/yt-dlp/yt-dlp/issues/10927). "
+                    f"Workaround: Install 'Get cookies.txt LOCALLY' browser extension, "
+                    f"export cookies as Netscape format, then use 'From File' mode.",
+                    "ERROR"
+                )
+                # Show a helpful messagebox
+                messagebox.showwarning(
+                    "Chrome Cookie Encryption",
+                    "Chrome's App-Bound Encryption prevents external cookie reading.\n\n"
+                    "This is a Chrome security feature, not a bug.\n\n"
+                    "Workaround:\n"
+                    "1. Install 'Get cookies.txt LOCALLY' Chrome extension\n"
+                    "2. Go to YouTube and sign in\n"
+                    "3. Click the extension icon → Export (Netscape format)\n"
+                    "4. Switch to 'From File' mode and select the exported file\n\n"
+                    "Alternative: Use Firefox instead (cookies-from-browser works with Firefox)."
+                )
+            else:
+                self.cookie_status_label.config(text=f"✗ Failed: check logs", fg="red")
+                self.log_message(f"Cookie test FAILED: {error_msg}", "ERROR")
+
+    def _handle_dpapi_failure(self):
+        """Handle DPAPI cookie failure during download — disable broken mode and guide user."""
+        if self.cookie_mode.get() == 'from_browser':
+            browser = self.cookie_browser.get()
+            self.cookie_status_label.config(
+                text=f"✗ {browser} DPAPI blocked — use 'From File'", fg="red")
+            # Don't auto-switch mode, but warn clearly
+            messagebox.showwarning(
+                "Cookie Extraction Failed",
+                f"Could not read {browser} cookies due to App-Bound Encryption.\n\n"
+                "Your download will proceed WITHOUT cookies.\n\n"
+                "To fix: switch to 'From File' mode with an exported cookies.txt,\n"
+                "or use Firefox as your cookie browser."
+            )
+
+    # Chrome Web Store URL for the recommended cookie export extension
+    _COOKIE_EXTENSION_URL = (
+        "https://chromewebstore.google.com/detail/"
+        "get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc"
+    )
+
+    def show_cookie_help(self):
+        """Show a help dialog explaining cookie authentication setup."""
+        help_win = tk.Toplevel(self.root)
+        help_win.title("Cookie Authentication Help")
+        help_win.geometry("580x520")
+        help_win.resizable(False, False)
+        help_win.transient(self.root)
+        help_win.grab_set()
+
+        # Main scrollable frame
+        canvas = tk.Canvas(help_win, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(help_win, orient="vertical", command=canvas.yview)
+        content = ttk.Frame(canvas)
+
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Title
+        tk.Label(content, text="🍪 Cookie Authentication Guide",
+                 font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 10))
+
+        # Why cookies?
+        tk.Label(content, text="Why do I need cookies?",
+                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(5, 3))
+        tk.Label(content, text=(
+            "Cookies are needed to download subscriber-only, members-only,\n"
+            "age-restricted, or private videos. They prove to YouTube that\n"
+            "you are signed in with a valid account."),
+            font=("Arial", 9), justify=tk.LEFT, wraplength=540
+        ).pack(anchor="w", padx=(10, 0))
+
+        # Why From Browser fails
+        ttk.Separator(content, orient="horizontal").pack(fill=tk.X, pady=10)
+        tk.Label(content, text="⚠ Why 'From Browser' fails on Chrome / Edge",
+                 font=("Arial", 11, "bold"), fg="#c00").pack(anchor="w", pady=(0, 3))
+        tk.Label(content, text=(
+            "Since mid-2024, Chrome and Edge use 'App-Bound Encryption' which\n"
+            "locks cookies so only Chrome itself can read them. External tools\n"
+            "like yt-dlp cannot decrypt them — this is a security feature, not a bug.\n\n"
+            "Firefox does NOT have this limitation, so 'From Browser' works\n"
+            "fine if you sign into YouTube in Firefox."),
+            font=("Arial", 9), justify=tk.LEFT, wraplength=540
+        ).pack(anchor="w", padx=(10, 0))
+
+        # Recommended method
+        ttk.Separator(content, orient="horizontal").pack(fill=tk.X, pady=10)
+        tk.Label(content, text="✅ Recommended: Export cookies with a Chrome extension",
+                 font=("Arial", 11, "bold"), fg="#060").pack(anchor="w", pady=(0, 3))
+
+        steps_text = (
+            "1.  Install the 'Get cookies.txt LOCALLY' Chrome extension (link below)\n"
+            "2.  Go to youtube.com and make sure you're signed in\n"
+            "3.  Click the extension icon in Chrome's toolbar\n"
+            "4.  Make sure Export Format is set to 'Netscape'\n"
+            "5.  Click 'Export' — save the file somewhere easy to find\n"
+            "6.  In this app, set Cookies mode to 'From File'\n"
+            "7.  Click 'Browse...' and select the exported cookies.txt file"
+        )
+        tk.Label(content, text=steps_text,
+                 font=("Arial", 9), justify=tk.LEFT, wraplength=540
+        ).pack(anchor="w", padx=(10, 0))
+
+        # Extension link button
+        link_frame = ttk.Frame(content)
+        link_frame.pack(anchor="w", padx=(10, 0), pady=(8, 0))
+
+        ext_btn = tk.Button(link_frame, text="📥 Install 'Get cookies.txt LOCALLY' Extension",
+                            font=("Arial", 10, "bold"), fg="white", bg="#1a73e8",
+                            activebackground="#1558b0", activeforeground="white",
+                            cursor="hand2", relief="raised", padx=12, pady=4,
+                            command=lambda: webbrowser.open(self._COOKIE_EXTENSION_URL))
+        ext_btn.pack(side=tk.LEFT)
+
+        # Security note
+        ttk.Separator(content, orient="horizontal").pack(fill=tk.X, pady=10)
+        tk.Label(content, text="🔒 Security Notes",
+                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 3))
+        tk.Label(content, text=(
+            "• cookies.txt files contain your active YouTube session — never share them\n"
+            "• Cookies expire over time — re-export if downloads start failing\n"
+            "• Only use extensions that process cookies locally (not cloud-based)\n"
+            "• The recommended extension processes everything in your browser,\n"
+            "  no data is sent to external servers"),
+            font=("Arial", 9), justify=tk.LEFT, wraplength=540
+        ).pack(anchor="w", padx=(10, 0))
+
+        # Close button
+        ttk.Button(content, text="Close", command=help_win.destroy).pack(pady=(15, 5))
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        help_win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+    def browse_cookie_file(self):
+        """Open file dialog to select a Netscape-format cookies.txt file."""
+        filepath = filedialog.askopenfilename(
+            title="Select Cookies File",
+            filetypes=[
+                ("Cookie files", "*.txt"),
+                ("All files", "*.*")
+            ],
+            initialdir=os.path.expanduser('~')
+        )
+        if filepath:
+            self.cookie_file_path.set(filepath)
+            self.cookie_status_label.config(text="✓ Cookie file loaded", fg="green")
+            self.log_message(f"Cookie file selected: {filepath}")
+            self.schedule_save_settings()
+
+    def get_cookie_opts(self):
+        """Build cookie-related yt-dlp options based on current GUI settings.
+        
+        The cookie file is passed directly to yt-dlp so it can persist updated
+        session tokens. Google/YouTube rotates tokens on each use — if yt-dlp
+        can't write them back, the cookies become stale and downloads fail
+        with 403 or 'cookies are no longer valid'.
+        """
+        mode = self.cookie_mode.get()
+        if mode == 'from_browser':
+            browser = self.cookie_browser.get()
+            profile = self.cookie_browser_profile.get().strip() or None
+            if profile:
+                return {'cookiesfrombrowser': (browser, profile)}
+            else:
+                return {'cookiesfrombrowser': (browser,)}
+        elif mode == 'from_file':
+            path = self.cookie_file_path.get().strip()
+            if path and os.path.isfile(path):
+                self.log_message(f"Using cookie file: {os.path.basename(path)}", "DEBUG")
+                return {'cookiefile': path}
+            else:
+                self.log_message("Cookie file path is invalid or file not found", "WARNING")
+        return {}
+
     def check_dependencies(self):
         """Check yt-dlp and FFmpeg versions manually when button is clicked."""
         self.log_message("Checking dependencies...", "INFO")
         
-        # Check yt-dlp version
+        # Check yt-dlp version - first try Python import (already imported at top), then CLI
+        yt_dlp_found = False
         try:
-            result = subprocess.run(['yt-dlp', '--version'], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                current_version = result.stdout.strip()
-                self.log_message(f"yt-dlp version: {current_version}")
-                
-                # Check if yt-dlp is up to date
-                try:
-                    update_result = subprocess.run(['yt-dlp', '--update'], 
-                                                 capture_output=True, text=True, timeout=30)
-                    if "Updated yt-dlp" in update_result.stdout:
-                        self.log_message("yt-dlp was updated to the latest version", "INFO")
-                    elif "yt-dlp is up to date" in update_result.stdout:
-                        self.log_message("yt-dlp is up to date", "INFO")
-                    else:
-                        self.log_message("yt-dlp update check completed", "INFO")
-                except Exception as e:
-                    self.log_message(f"Could not check for yt-dlp updates: {e}", "WARNING")
-                    
+            # Use the already-imported module (what the app actually uses)
+            if hasattr(yt_dlp, 'version') and hasattr(yt_dlp.version, '__version__'):
+                current_version = yt_dlp.version.__version__
+                self.log_message(f"yt-dlp version: {current_version} (Python module)")
+                yt_dlp_found = True
             else:
-                self.log_message("yt-dlp not found or not accessible", "WARNING")
-                self.log_message("Install with: pip install yt-dlp", "INFO")
-        except FileNotFoundError:
-            self.log_message("yt-dlp not found in system PATH", "WARNING")
-            self.log_message("Install with: pip install yt-dlp", "INFO")
+                # Fallback: try to get version another way
+                current_version = getattr(yt_dlp, '__version__', 'unknown')
+                if current_version != 'unknown':
+                    self.log_message(f"yt-dlp version: {current_version} (Python module)")
+                    yt_dlp_found = True
+        except (AttributeError, NameError) as e:
+            # Module not available or version attribute missing - try CLI
+            pass
         except Exception as e:
-            self.log_message(f"Error checking yt-dlp: {e}", "ERROR")
+            self.log_message(f"Error checking yt-dlp Python module: {e}", "DEBUG")
+        
+        # If Python module not found, try CLI executable
+        if not yt_dlp_found:
+            try:
+                result = subprocess.run(['yt-dlp', '--version'], 
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    current_version = result.stdout.strip()
+                    self.log_message(f"yt-dlp version: {current_version} (CLI)")
+                    yt_dlp_found = True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass  # Will show error below
+            except Exception as e:
+                self.log_message(f"Error checking yt-dlp CLI: {e}", "DEBUG")
+        
+        # Check for updates if yt-dlp was found
+        if yt_dlp_found:
+            try:
+                update_result = subprocess.run(['yt-dlp', '--update'], 
+                                             capture_output=True, text=True, timeout=30)
+                if "Updated yt-dlp" in update_result.stdout:
+                    self.log_message("yt-dlp was updated to the latest version", "INFO")
+                elif "yt-dlp is up to date" in update_result.stdout:
+                    self.log_message("yt-dlp is up to date", "INFO")
+                else:
+                    self.log_message("yt-dlp update check completed", "INFO")
+            except Exception as e:
+                self.log_message(f"Could not check for yt-dlp updates: {e}", "DEBUG")
+        else:
+            self.log_message("yt-dlp not found or not accessible", "WARNING")
+            self.log_message("Install with: pip install yt-dlp", "INFO")
         
         # Check FFmpeg version
         try:
@@ -1616,7 +2098,18 @@ class YouTubeDownloaderApp:
             return videos_to_add
             
         except Exception as e:
-            self.log_message(f"Error fetching video info: {e}", "ERROR")
+            error_str = str(e)
+            if self._is_dpapi_error(error_str):
+                self.log_message(
+                    "Cookie extraction failed due to Chrome App-Bound Encryption (DPAPI). "
+                    "Switch to 'From File' mode or use Firefox. "
+                    "See: https://github.com/yt-dlp/yt-dlp/issues/10927",
+                    "ERROR"
+                )
+                # Auto-disable broken cookie mode to prevent repeated failures
+                self.root.after(0, lambda: self._handle_dpapi_failure())
+            else:
+                self.log_message(f"Error fetching video info: {e}", "ERROR")
             return None
 
     def _process_url(self, url, quality):
@@ -2408,7 +2901,9 @@ class YouTubeDownloaderApp:
                 # Log configuration only once per session to reduce spam
                 if not hasattr(self, '_config_logged'):
                     self.log_message(f"yt-dlp configuration: format='{ydl_opts.get('format', 'default')}', retries={ydl_opts.get('retries', 0)}", "DEBUG")
-                    self.log_message("Using android client to work around YouTube's SABR protocol", "DEBUG")
+                    ea = ydl_opts.get('extractor_args', {}).get('youtube', {})
+                    clients = ea.get('player_client', ['default'])
+                    self.log_message(f"Player clients: {', '.join(clients)}, JS runtime: node", "DEBUG")
                     self._config_logged = True
                 
                 # Clear any previous cancellation flags
@@ -2459,23 +2954,14 @@ class YouTubeDownloaderApp:
                                 download_result['error'] = 'cancelled_before_start'
                                 return
                             
-                            # Use stored info object if available, otherwise download by URL
-                            if 'info' in video_info and video_info['info']:
-                                # Use cached info silently to reduce log spam
-                                pass
-                                # Check for stop before processing
-                                if self.stop_event.is_set() or download_cancelled.is_set():
-                                    self.log_message("STOP: Cancelled before processing cached info", "WARNING")
-                                    raise yt_dlp.utils.DownloadCancelled('User requested stop')
-                                ydl.process_ie_result(video_info['info'])
-                            else:
-                                # URL logging handled by yt-dlp debug output
-                                pass
-                                # Check for stop before download
-                                if self.stop_event.is_set() or download_cancelled.is_set():
-                                    self.log_message("STOP: Cancelled before starting download", "WARNING")
-                                    raise yt_dlp.utils.DownloadCancelled('User requested stop')
-                                ydl.download([video_info['url']])
+                            # Always do a fresh extraction+download to get fresh URLs.
+                            # Cached info from earlier extraction contains m3u8/HLS URLs
+                            # with time-limited auth tokens that expire within seconds.
+                            # Using stale URLs → 403 Forbidden on HLS fragments.
+                            if self.stop_event.is_set() or download_cancelled.is_set():
+                                self.log_message("STOP: Cancelled before starting download", "WARNING")
+                                raise yt_dlp.utils.DownloadCancelled('User requested stop')
+                            ydl.download([video_info['url']])
                         
                         download_result['success'] = True
                     except Exception as e:
@@ -2486,32 +2972,32 @@ class YouTubeDownloaderApp:
                 ytdlp_thread.start()
                 
                 # Wait for completion or cancellation with timeout
-                start_time = time.time()
-                while ytdlp_thread.is_alive():
-                    if self.stop_event.is_set() or download_cancelled.is_set():
-                        elapsed = time.time() - start_time
-                        self.log_message(f"TIMEOUT: Forcing termination after {elapsed:.1f}s", "WARNING")
-                        # Give yt-dlp a moment to respond to cancellation
-                        ytdlp_thread.join(timeout=1.0)
-                        if ytdlp_thread.is_alive():
-                            self.log_message("TIMEOUT: yt-dlp thread still alive, raising cancellation", "WARNING")
-                            raise yt_dlp.utils.DownloadCancelled('Forced timeout cancellation')
-                        break
-                    time.sleep(0.1)
-                
-                # Check the result
-                if download_result.get('error'):
-                    if download_result['error'] == 'cancelled_before_start':
-                        # Reset status back to pending since we didn't actually start
-                        self.root.after(0, self.update_video_status, video_info['item_id'], 'Pending')
-                        current_downloading_video = None
-                        break
-                    else:
-                        raise download_result['error']
-                
+                # Check the result and handle errors within try block
                 try:
-                    pass  # Placeholder for the original try block content
-
+                    start_time = time.time()
+                    while ytdlp_thread.is_alive():
+                        if self.stop_event.is_set() or download_cancelled.is_set():
+                            elapsed = time.time() - start_time
+                            self.log_message(f"TIMEOUT: Forcing termination after {elapsed:.1f}s", "WARNING")
+                            # Give yt-dlp a moment to respond to cancellation
+                            ytdlp_thread.join(timeout=1.0)
+                            if ytdlp_thread.is_alive():
+                                self.log_message("TIMEOUT: yt-dlp thread still alive, raising cancellation", "WARNING")
+                                raise yt_dlp.utils.DownloadCancelled('Forced timeout cancellation')
+                            break
+                        time.sleep(0.1)
+                    if download_result.get('error'):
+                        if download_result['error'] == 'cancelled_before_start':
+                            # Reset status back to pending since we didn't actually start
+                            self.root.after(0, self.update_video_status, video_info['item_id'], 'Pending')
+                            current_downloading_video = None
+                            break
+                        else:
+                            # Re-raise the error to be caught by specific exception handlers
+                            raise download_result['error']
+                    
+                    # If no error, wait for thread to complete
+                    ytdlp_thread.join(timeout=0.1)
                 
                 except yt_dlp.utils.DownloadCancelled:
                     # Handle user-requested cancellation
@@ -2524,9 +3010,18 @@ class YouTubeDownloaderApp:
                 except yt_dlp.DownloadError as e:
                     # Handle yt-dlp specific download errors
                     error_msg = str(e)
+                    if self._is_dpapi_error(error_msg):
+                        self.log_message(
+                            "Cookie extraction failed (DPAPI / App-Bound Encryption). "
+                            "Switch cookies to 'From File' mode or use Firefox. "
+                            "See: https://github.com/yt-dlp/yt-dlp/issues/10927",
+                            "ERROR"
+                        )
+                        self.root.after(0, lambda: self._handle_dpapi_failure())
+                        raise Exception("Cookie decryption blocked by Chrome — switch to 'From File' mode")
                     self.log_message(f"yt-dlp DownloadError: {error_msg}", "ERROR")
                     raise Exception(f"Download failed: {error_msg}")
-                except yt_dlp.ExtractorError as e:
+                except yt_dlp.utils.ExtractorError as e:
                     # Handle extraction errors
                     error_msg = str(e)
                     self.log_message(f"yt-dlp ExtractorError: {error_msg}", "ERROR")
@@ -3743,6 +4238,12 @@ class YouTubeDownloaderApp:
                     'active': self.sabr_mode_active,
                     'last_check': self.last_sabr_check,
                     'detection_details': self.sabr_detection_details
+                },
+                'cookie_auth': {
+                    'mode': self.cookie_mode.get(),
+                    'browser': self.cookie_browser.get(),
+                    'browser_profile': self.cookie_browser_profile.get(),
+                    'file_path': self.cookie_file_path.get()
                 }
             }
             with open(SETTINGS_FILE, 'w') as f:
@@ -3787,6 +4288,15 @@ class YouTubeDownloaderApp:
                 self.sabr_detection_details = sabr_settings.get('detection_details', {})
                 
                 self.log_message("SABR mode starts disabled - will be activated only by user actions", "DEBUG")
+                
+                # Load cookie authentication settings
+                cookie_settings = settings.get('cookie_auth', {})
+                cookie_mode = cookie_settings.get('mode', 'none')
+                self.cookie_browser.set(cookie_settings.get('browser', 'chrome'))
+                self.cookie_browser_profile.set(cookie_settings.get('browser_profile', ''))
+                self.cookie_file_path.set(cookie_settings.get('file_path', ''))
+                # Apply cookie mode (this shows/hides the right widgets)
+                self._set_cookie_mode(cookie_mode)
 
                 loaded_queue = settings.get('queue', [])
                 if loaded_queue:
@@ -3823,11 +4333,26 @@ class YouTubeDownloaderApp:
 
 def check_yt_dlp_on_startup():
     """Check if yt-dlp is available and suggest installation if not."""
+    # First try importing the Python module (what the app actually uses)
+    try:
+        import yt_dlp
+        if hasattr(yt_dlp, 'version') and hasattr(yt_dlp.version, '__version__'):
+            print(f"yt-dlp version: {yt_dlp.version.__version__} (Python module)")
+            return True
+        elif hasattr(yt_dlp, '__version__'):
+            print(f"yt-dlp version: {yt_dlp.__version__} (Python module)")
+            return True
+    except ImportError:
+        pass  # Will try CLI check below
+    except Exception as e:
+        print(f"Error checking yt-dlp Python module: {e}")
+    
+    # Fallback: try CLI executable
     try:
         result = subprocess.run(['yt-dlp', '--version'], 
                               capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            print(f"yt-dlp version: {result.stdout.strip()}")
+            print(f"yt-dlp version: {result.stdout.strip()} (CLI)")
             return True
         else:
             print("WARNING: yt-dlp not found or not accessible")
