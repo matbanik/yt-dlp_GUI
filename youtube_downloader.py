@@ -1746,14 +1746,20 @@ class YouTubeDownloaderApp:
                             if title_clean in file_clean or file_clean in title_clean:
                                 score += 5  # Bonus for substring match
                             
-                            if score > best_score and score >= 1:  # At least 1 word match or substring
+                            if score > best_score:
                                 best_match = file
                                 best_score = score
                         
-                        if best_match:
+                        # Require at least 50% of title words AND minimum 3 matches
+                        # to prevent false positives on videos with shared words
+                        # (e.g. all "BARLATES BODY BLITZ" videos matching each other)
+                        min_required = max(3, len(title_words) // 2)
+                        if best_match and best_score >= min_required:
                             potential_match = os.path.join(download_path, best_match)
-                            self.log_message(f"Best match found: {best_match} (score: {best_score})", "DEBUG")
+                            self.log_message(f"Best match found: {best_match} (score: {best_score}/{len(title_words)} words)", "DEBUG")
                             downloaded_file = potential_match
+                        elif best_match:
+                            self.log_message(f"Fuzzy match rejected: {best_match} (score: {best_score}/{len(title_words)}, need {min_required})", "DEBUG")
                     
                 except Exception as e:
                     self.log_message(f"Could not list download directory: {e}", "DEBUG")
